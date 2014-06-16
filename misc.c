@@ -13,6 +13,14 @@
  * modified is included with the above copyright notice.
  */
 
+/*
+ * We (the Mercury group) have made the following changes:
+ * -- deleted a debugging call to MessageBoxA,
+ *    as a hacky work-around to avoid needing to link in
+ *    the Windows libraries.
+ * -fjh.
+ */
+
 #include "private/gc_pmark.h"
 
 #include <stdio.h>
@@ -1644,22 +1652,7 @@ GC_API GC_warn_proc GC_CALL GC_get_warn_proc(void)
 
     if (msg != NULL) {
 #     if defined(MSWIN32)
-#       ifndef DONT_USE_USER32_DLL
-          /* Use static binding to "user32.dll".        */
-          (void)MessageBoxA(NULL, msg, "Fatal error in GC",
-                            MB_ICONERROR | MB_OK);
-#       else
-          /* This simplifies linking - resolve "MessageBoxA" at run-time. */
-          HINSTANCE hU32 = LoadLibrary(TEXT("user32.dll"));
-          if (hU32) {
-            FARPROC pfn = GetProcAddress(hU32, "MessageBoxA");
-            if (pfn)
-              (void)(*(int (WINAPI *)(HWND, LPCSTR, LPCSTR, UINT))pfn)(
-                                  NULL /* hWnd */, msg, "Fatal error in GC",
-                                  MB_ICONERROR | MB_OK);
-            (void)FreeLibrary(hU32);
-          }
-#       endif
+        DebugBreak();
         /* Also duplicate msg to GC log file.   */
 #     endif
 
