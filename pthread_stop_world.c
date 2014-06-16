@@ -210,6 +210,9 @@ STATIC void GC_suspend_handler_inner(ptr_t sig_arg, void *context);
 #endif
 {
   int old_errno = errno;
+  if (GC_mercury_callback_pause_thread) {
+    GC_mercury_callback_pause_thread();
+  }
 
 # if defined(IA64) || defined(HP_PA) || defined(M68K)
     GC_with_callee_saves_pushed(GC_suspend_handler_inner, (ptr_t)(word)sig);
@@ -221,6 +224,10 @@ STATIC void GC_suspend_handler_inner(ptr_t sig_arg, void *context);
 #   endif
     GC_suspend_handler_inner((ptr_t)(word)sig, context);
 # endif
+
+  if (GC_mercury_callback_resume_thread) {
+    GC_mercury_callback_resume_thread();
+  }
   errno = old_errno;
 }
 
