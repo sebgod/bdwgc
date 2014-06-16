@@ -175,16 +175,28 @@ STATIC void GC_suspend_handler_inner(ptr_t sig_arg, void *context);
 {
 # if defined(IA64) || defined(HP_PA) || defined(M68K)
     int old_errno = errno;
+    if (GC_mercury_callback_pause_thread) {
+      GC_mercury_callback_pause_thread();
+    }
     GC_with_callee_saves_pushed(GC_suspend_handler_inner, (ptr_t)(word)sig);
+    if (GC_mercury_callback_resume_thread) {
+      GC_mercury_callback_resume_thread();
+    }
     errno = old_errno;
 # else
     /* We believe that in all other cases the full context is already   */
     /* in the signal handler frame.                                     */
     int old_errno = errno;
+    if (GC_mercury_callback_pause_thread) {
+      GC_mercury_callback_pause_thread();
+    }
 #   ifndef SA_SIGINFO
       void *context = 0;
 #   endif
     GC_suspend_handler_inner((ptr_t)(word)sig, context);
+    if (GC_mercury_callback_resume_thread) {
+      GC_mercury_callback_resume_thread();
+    }
     errno = old_errno;
 # endif
 }
