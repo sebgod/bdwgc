@@ -616,7 +616,12 @@ GC_API int GC_CALL GC_thread_is_registered(void)
 #ifdef CYGWIN32
 # define GC_PTHREAD_PTRVAL(pthread_id) pthread_id
 #elif defined(GC_WIN32_PTHREADS) || defined(GC_PTHREADS_PARAMARK)
-# define GC_PTHREAD_PTRVAL(pthread_id) pthread_id.p
+# include <pthread.h> /* to check for winpthreads */
+# if defined(__WINPTHREADS_VERSION_MAJOR)
+#   define GC_PTHREAD_PTRVAL(pthread_id) pthread_id
+# else
+#   define GC_PTHREAD_PTRVAL(pthread_id) pthread_id.p
+# endif
 #endif
 
 /* If a thread has been joined, but we have not yet             */
@@ -2456,12 +2461,10 @@ GC_INNER void GC_thr_init(void)
 #   ifndef GC_WIN32_PTHREADS
       while ((t = GC_lookup_pthread(pthread_id)) == 0)
         Sleep(10);
-#   endif
-
-    result = pthread_join(pthread_id, retval);
-
-#   ifdef GC_WIN32_PTHREADS
-      /* win32_pthreads id are unique */
+      result = pthread_join(pthread_id, retval);
+#   else
+      result = pthread_join(pthread_id, retval);
+      /* pthreads-win32 and winpthreads id are unique (not recycled). */
       t = GC_lookup_pthread(pthread_id);
       if (NULL == t) ABORT("Thread not registered");
 #   endif
