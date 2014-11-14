@@ -12,6 +12,7 @@ set -e
 # prefix.  Otherwise, you may need to invoke autoreconf with the appropriate
 # -I options to locate the required *.m4 files.
 
+libtoolize
 autoreconf -i
 
 echo
