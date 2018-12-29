@@ -64,12 +64,12 @@ endif
 ifeq ("$(GC_GRADE)", "par_gc")
 submake: force
 	MAKEFLAGS=""; export MAKEFLAGS; \
-	TMP=. nmake -f "gc.mak" CFG="gc - Win32 Release"
+	TMP=. nmake.exe -f "gc.mak" CFG="gc - Win32 Release"
 	mv Release/libpar_gc.dll Release/libpar_gc.lib .
 else
 submake: force
 	MAKEFLAGS=""; export MAKEFLAGS; \
-	nmake -f NT_MAKEFILE cdebug="$(CDEBUG)" nodebug=1 gc.lib; \
+	nmake.exe -f NT_MAKEFILE cdebug="$(CDEBUG)" nodebug=1 gc.lib; \
 	cp gc.lib lib$(GC_GRADE).lib
 endif
 
