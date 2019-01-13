@@ -227,6 +227,9 @@ CORD CORD_cat_char_star(CORD x, const char * y, size_t leny)
         result->len = (word)result_len;
         result->left = x;
         result->right = y;
+        GC_END_STUBBORN_CHANGE(result);
+        GC_reachable_here(x);
+        GC_reachable_here(y);
         if (depth >= MAX_DEPTH) {
             return(CORD_balance((CORD)result));
         } else {
@@ -269,6 +272,9 @@ CORD CORD_cat(CORD x, CORD y)
         result->len = (word)result_len;
         result->left = x;
         result->right = y;
+        GC_END_STUBBORN_CHANGE(result);
+        GC_reachable_here(x);
+        GC_reachable_here(y);
         if (depth >= MAX_DEPTH) {
             return(CORD_balance((CORD)result));
         } else {
@@ -310,6 +316,8 @@ static CordRep *CORD_from_fn_inner(CORD_fn fn, void * client_data, size_t len)
         result->len = (word)len;
         result->fn = fn;
         result->client_data = client_data;
+        GC_END_STUBBORN_CHANGE(result);
+        GC_reachable_here(client_data);
         return (CordRep *)result;
     }
 }
@@ -360,6 +368,8 @@ CORD CORD_substr_closure(CORD x, size_t i, size_t n, CORD_fn f)
     if (sa == 0) OUT_OF_MEMORY;
     sa->sa_cord = (CordRep *)x;
     sa->sa_index = i;
+    GC_END_STUBBORN_CHANGE(sa);
+    GC_reachable_here(x);
     result = CORD_from_fn_inner(f, (void *)sa, n);
     if ((CORD)result != CORD_EMPTY && 0 == result -> function.null)
         result -> function.header = SUBSTR_HDR;
@@ -778,19 +788,30 @@ void CORD__extend_path(register CORD_pos p)
 char CORD__pos_fetch(register CORD_pos p)
 {
     /* Leaf is a function node */
-    struct CORD_pe * pe = &((p)[0].path[(p)[0].path_len]);
-    CORD leaf = pe -> pe_cord;
-    register struct Function * f = &(((CordRep *)leaf) -> function);
+    struct CORD_pe * pe;
+    CORD leaf;
+    register struct Function * f;
 
-    if (!IS_FUNCTION(leaf)) ABORT("CORD_pos_fetch: bad leaf");
+    if (!CORD_pos_valid(p))
+        ABORT("CORD_pos_fetch: invalid argument");
+    pe = &p[0].path[p[0].path_len];
+    leaf = pe -> pe_cord;
+    if (!IS_FUNCTION(leaf))
+        ABORT("CORD_pos_fetch: bad leaf");
+    f = &((CordRep *)leaf)->function;
     return ((*(f -> fn))(p[0].cur_pos - pe -> pe_start_pos, f -> client_data));
 }
 
 void CORD__next(register CORD_pos p)
 {
     register size_t cur_pos = p[0].cur_pos + 1;
-    register struct CORD_pe * current_pe = &((p)[0].path[(p)[0].path_len]);
-    register CORD leaf = current_pe -> pe_cord;
+    register struct CORD_pe * current_pe;
+    register CORD leaf;
+
+    if (!CORD_pos_valid(p))
+        ABORT("CORD_next: invalid argument");
+    current_pe = &p[0].path[p[0].path_len];
+    leaf = current_pe -> pe_cord;
 
     /* Leaf is not a string or we're at end of leaf */
     p[0].cur_pos = cur_pos;

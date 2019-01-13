@@ -239,8 +239,6 @@ GC_INNER char * GC_get_maps(void)
         } while (maps_size >= maps_buf_sz || maps_size < old_maps_size);
                 /* In the single-threaded case, the second clause is false. */
         maps_buf[maps_size] = '\0';
-
-        /* Apply fn to result.  */
         return maps_buf;
 }
 
@@ -1799,11 +1797,12 @@ void GC_register_data_segments(void)
 
   GC_INNER void GC_add_current_malloc_heap(void)
   {
-    struct GC_malloc_heap_list *new_l =
+    struct GC_malloc_heap_list *new_l = (struct GC_malloc_heap_list *)
                  malloc(sizeof(struct GC_malloc_heap_list));
-    void * candidate = GC_get_allocation_base(new_l);
+    void *candidate;
 
-    if (new_l == 0) return;
+    if (NULL == new_l) return;
+    candidate = GC_get_allocation_base(new_l);
     if (GC_is_malloc_heap_base(candidate)) {
       /* Try a little harder to find malloc heap.                       */
         size_t req_size = 10000;
@@ -2125,7 +2124,7 @@ STATIC ptr_t GC_unix_mmap_get_mem(size_t bytes)
 #       ifdef SYMBIAN
           char *path = GC_get_private_path_and_zero_file();
           if (path != NULL) {
-            zero_fd = open(path, O_RDWR | O_CREAT, 0666);
+            zero_fd = open(path, O_RDWR | O_CREAT, 0644);
             free(path);
           }
 #       else
@@ -2962,6 +2961,28 @@ GC_API GC_push_other_roots_proc GC_CALL GC_get_push_other_roots(void)
 
 #endif /* DEFAULT_VDB */
 
+#if defined(MANUAL_VDB) || defined(MPROTECT_VDB)
+# if !defined(THREADS) || defined(HAVE_LOCKFREE_AO_OR)
+#   define async_set_pht_entry_from_index(db, index) \
+                        set_pht_entry_from_index_concurrent(db, index)
+# elif defined(AO_HAVE_test_and_set_acquire)
+    /* We need to lock around the bitmap update (in the write fault     */
+    /* handler or GC_dirty) in order to avoid the risk of losing a bit. */
+    /* We do this with a test-and-set spin lock if possible.            */
+    GC_INNER volatile AO_TS_t GC_fault_handler_lock = AO_TS_INITIALIZER;
+
+    static void async_set_pht_entry_from_index(volatile page_hash_table db,
+                                               size_t index)
+    {
+      GC_acquire_dirty_lock();
+      set_pht_entry_from_index(db, index);
+      GC_release_dirty_lock();
+    }
+# else
+#   error No test_and_set operation: Introduces a race.
+# endif /* THREADS && !AO_HAVE_test_and_set_acquire */
+#endif /* MANUAL_VDB || MPROTECT_VDB */
+
 #ifdef MANUAL_VDB
   /* Initialize virtual dirty bit implementation.       */
   GC_INNER GC_bool GC_dirty_init(void)
@@ -2980,12 +3001,9 @@ GC_API GC_push_other_roots_proc GC_CALL GC_get_push_other_roots(void)
     BZERO((word *)GC_dirty_pages, (sizeof GC_dirty_pages));
   }
 
-# define async_set_pht_entry_from_index(db, index) \
-                        set_pht_entry_from_index(db, index) /* for now */
-
   /* Mark the page containing p as dirty.  Logically, this dirties the  */
   /* entire object.                                                     */
-  void GC_dirty(ptr_t p)
+  GC_INNER void GC_dirty_inner(const void *p)
   {
     word index = PHT_HASH(p);
     async_set_pht_entry_from_index(GC_dirty_pages, index);
@@ -3112,62 +3130,6 @@ GC_API GC_push_other_roots_proc GC_CALL GC_get_push_other_roots(void)
 # endif /* !MSWIN32 */
 #endif /* !DARWIN */
 
-#if defined(THREADS)
-/* We need to lock around the bitmap update in the write fault handler  */
-/* in order to avoid the risk of losing a bit.  We do this with a       */
-/* test-and-set spin lock if we know how to do that.  Otherwise we      */
-/* check whether we are already in the handler and use the dumb but     */
-/* safe fallback algorithm of setting all bits in the word.             */
-/* Contention should be very rare, so we do the minimum to handle it    */
-/* correctly.                                                           */
-#ifdef AO_HAVE_test_and_set_acquire
-  GC_INNER volatile AO_TS_t GC_fault_handler_lock = AO_TS_INITIALIZER;
-  static void async_set_pht_entry_from_index(volatile page_hash_table db,
-                                             size_t index)
-  {
-    while (AO_test_and_set_acquire(&GC_fault_handler_lock) == AO_TS_SET) {
-      /* empty */
-    }
-    /* Could also revert to set_pht_entry_from_index_safe if initial    */
-    /* GC_test_and_set fails.                                           */
-    set_pht_entry_from_index(db, index);
-    AO_CLEAR(&GC_fault_handler_lock);
-  }
-#else /* !AO_HAVE_test_and_set_acquire */
-# error No test_and_set operation: Introduces a race.
-  /* THIS WOULD BE INCORRECT!                                           */
-  /* The dirty bit vector may be temporarily wrong,                     */
-  /* just before we notice the conflict and correct it. We may end up   */
-  /* looking at it while it's wrong.  But this requires contention      */
-  /* exactly when a GC is triggered, which seems far less likely to     */
-  /* fail than the old code, which had no reported failures.  Thus we   */
-  /* leave it this way while we think of something better, or support   */
-  /* GC_test_and_set on the remaining platforms.                        */
-  static int * volatile currently_updating = 0;
-  static void async_set_pht_entry_from_index(volatile page_hash_table db,
-                                             size_t index)
-  {
-    int update_dummy;
-    currently_updating = &update_dummy;
-    set_pht_entry_from_index(db, index);
-    /* If we get contention in the 10 or so instruction window here,    */
-    /* and we get stopped by a GC between the two updates, we lose!     */
-    if (currently_updating != &update_dummy) {
-        set_pht_entry_from_index_safe(db, index);
-        /* We claim that if two threads concurrently try to update the  */
-        /* dirty bit vector, the first one to execute UPDATE_START      */
-        /* will see it changed when UPDATE_END is executed.  (Note that */
-        /* &update_dummy must differ in two distinct threads.)  It      */
-        /* will then execute set_pht_entry_from_index_safe, thus        */
-        /* returning us to a safe state, though not soon enough.        */
-    }
-  }
-#endif /* !AO_HAVE_test_and_set_acquire */
-#else /* !THREADS */
-# define async_set_pht_entry_from_index(db, index) \
-                        set_pht_entry_from_index(db, index)
-#endif /* !THREADS */
-
 #ifndef DARWIN
 
 # ifdef CHECKSUMS
@@ -3283,7 +3245,7 @@ GC_API GC_push_other_roots_proc GC_CALL GC_get_push_other_roots(void)
                 }
 #           endif
 
-            if (old_handler == (SIG_HNDLR_PTR)SIG_DFL) {
+            if (old_handler == (SIG_HNDLR_PTR)(signed_word)SIG_DFL) {
 #               if !defined(MSWIN32) && !defined(MSWINCE)
                     ABORT_ARG1("Unexpected bus error or segmentation fault",
                                " at %p", (void *)addr);
@@ -3303,7 +3265,7 @@ GC_API GC_push_other_roots_proc GC_CALL GC_get_push_other_roots(void)
                       ((SIG_HNDLR_PTR)old_handler) (sig, si, raw_sc);
                     else
                       /* FIXME: should pass nonstandard args as well. */
-                      ((PLAIN_HNDLR_PTR)old_handler) (sig);
+                      ((PLAIN_HNDLR_PTR)(signed_word)old_handler)(sig);
                     return;
 #               endif
             }
@@ -3421,14 +3383,14 @@ GC_INNER void GC_remove_protection(struct hblk *h, word nblocks,
         GC_old_segv_handler = oldact.sa_sigaction;
         GC_old_segv_handler_used_si = TRUE;
       } else {
-        GC_old_segv_handler = (SIG_HNDLR_PTR)oldact.sa_handler;
+        GC_old_segv_handler = (SIG_HNDLR_PTR)(signed_word)oldact.sa_handler;
         GC_old_segv_handler_used_si = FALSE;
       }
-      if (GC_old_segv_handler == (SIG_HNDLR_PTR)SIG_IGN) {
+      if (GC_old_segv_handler == (SIG_HNDLR_PTR)(signed_word)SIG_IGN) {
         WARN("Previously ignored segmentation violation!?\n", 0);
-        GC_old_segv_handler = (SIG_HNDLR_PTR)SIG_DFL;
+        GC_old_segv_handler = (SIG_HNDLR_PTR)(signed_word)SIG_DFL;
       }
-      if (GC_old_segv_handler != (SIG_HNDLR_PTR)SIG_DFL) {
+      if (GC_old_segv_handler != (SIG_HNDLR_PTR)(signed_word)SIG_DFL) {
         GC_VERBOSE_LOG_PRINTF("Replaced other SIGSEGV handler\n");
       }
 #   if defined(HPUX) || defined(LINUX) || defined(HURD) \
@@ -3440,19 +3402,19 @@ GC_INNER void GC_remove_protection(struct hblk *h, word nblocks,
           GC_old_bus_handler_used_si = TRUE;
 #       endif
       } else {
-        GC_old_bus_handler = (SIG_HNDLR_PTR)oldact.sa_handler;
+        GC_old_bus_handler = (SIG_HNDLR_PTR)(signed_word)oldact.sa_handler;
 #       if !defined(LINUX)
           GC_old_bus_handler_used_si = FALSE;
 #       endif
       }
-      if (GC_old_bus_handler == (SIG_HNDLR_PTR)SIG_IGN) {
+      if (GC_old_bus_handler == (SIG_HNDLR_PTR)(signed_word)SIG_IGN) {
         WARN("Previously ignored bus error!?\n", 0);
 #       if !defined(LINUX)
-          GC_old_bus_handler = (SIG_HNDLR_PTR)SIG_DFL;
+          GC_old_bus_handler = (SIG_HNDLR_PTR)(signed_word)SIG_DFL;
 #       else
           /* GC_old_bus_handler is not used by GC_write_fault_handler.  */
 #       endif
-      } else if (GC_old_bus_handler != (SIG_HNDLR_PTR)SIG_DFL) {
+      } else if (GC_old_bus_handler != (SIG_HNDLR_PTR)(signed_word)SIG_DFL) {
           GC_VERBOSE_LOG_PRINTF("Replaced other SIGBUS handler\n");
       }
 #   endif /* HPUX || LINUX || HURD || (FREEBSD && SUNOS5SIGS) */
@@ -4174,7 +4136,7 @@ GC_INNER GC_bool GC_dirty_init(void)
       /* sa.sa_restorer is deprecated and should not be initialized. */
       if (sigaction(SIGBUS, &sa, &oldsa) < 0)
         ABORT("sigaction failed");
-      if ((SIG_HNDLR_PTR)oldsa.sa_handler != SIG_DFL) {
+      if (oldsa.sa_handler != (SIG_HNDLR_PTR)(signed_word)SIG_DFL) {
         GC_VERBOSE_LOG_PRINTF("Replaced other SIGBUS handler\n");
       }
     }
@@ -4722,14 +4684,16 @@ GC_INNER void GC_print_callers(struct callinfo info[NFRAMES])
                 }
                 /* Get rid of embedded newline, if any.  Test for "main" */
                 {
-                   char * nl = strchr(result_buf, '\n');
-                   if (nl != NULL
-                       && (word)nl < (word)(result_buf + result_len)) {
-                     *nl = ':';
-                   }
-                   if (strncmp(result_buf, "main", nl - result_buf) == 0) {
-                     stop = TRUE;
-                   }
+                  char * nl = strchr(result_buf, '\n');
+                  if (nl != NULL
+                      && (word)nl < (word)(result_buf + result_len)) {
+                    *nl = ':';
+                  }
+                  if (strncmp(result_buf, "main",
+                              nl != NULL ? (size_t)(nl - result_buf)
+                                         : result_len) == 0) {
+                    stop = TRUE;
+                  }
                 }
                 if (result_len < RESULT_SZ - 25) {
                   /* Add in hex address */

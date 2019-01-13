@@ -911,12 +911,17 @@ typedef word page_hash_table[PHT_SIZE];
                 (((bl)[divWORDSZ(index)] >> modWORDSZ(index)) & 1)
 # define set_pht_entry_from_index(bl, index) \
                 (bl)[divWORDSZ(index)] |= (word)1 << modWORDSZ(index)
-# define clear_pht_entry_from_index(bl, index) \
-                (bl)[divWORDSZ(index)] &= ~((word)1 << modWORDSZ(index))
-/* And a dumb but thread-safe version of set_pht_entry_from_index.      */
-/* This sets (many) extra bits.                                         */
-# define set_pht_entry_from_index_safe(bl, index) \
-                (bl)[divWORDSZ(index)] = ONES
+
+#if defined(THREADS) && defined(AO_HAVE_or)
+  /* And, one more version for async_set_pht_entry_from_index (invoked  */
+  /* by GC_dirty or the write fault handler).                           */
+# define set_pht_entry_from_index_concurrent(bl, index) \
+                AO_or((volatile AO_t *)&(bl)[divWORDSZ(index)], \
+                      (AO_t)((word)1 << modWORDSZ(index)))
+#else
+# define set_pht_entry_from_index_concurrent(bl, index) \
+                set_pht_entry_from_index(bl, index)
+#endif
 
 
 /********************************************/
@@ -1739,6 +1744,9 @@ GC_INNER void GC_set_fl_marks(ptr_t p);
                                     /* set.  Abort if not.              */
 #endif
 void GC_add_roots_inner(ptr_t b, ptr_t e, GC_bool tmp);
+#ifdef USE_PROC_FOR_LIBRARIES
+  GC_INNER void GC_remove_roots_subregion(ptr_t b, ptr_t e);
+#endif
 GC_INNER void GC_exclude_static_roots_inner(void *start, void *finish);
 #if defined(DYNAMIC_LOADING) || defined(MSWIN32) || defined(MSWINCE) \
     || defined(CYGWIN32) || defined(PCR)
@@ -1899,6 +1907,13 @@ GC_INNER GC_bool GC_try_to_collect_inner(GC_stop_func f);
                                 /* completes successfully.              */
 #define GC_gcollect_inner() \
                 (void)GC_try_to_collect_inner(GC_never_stop_func)
+
+#ifdef THREADS
+  GC_EXTERN GC_bool GC_in_thread_creation;
+        /* We may currently be in thread creation or destruction.       */
+        /* Only set to TRUE while allocation lock is held.              */
+        /* When set, it is OK to run GC from unknown thread.            */
+#endif
 
 GC_EXTERN GC_bool GC_is_initialized; /* GC_init() has been run. */
 
@@ -2137,6 +2152,15 @@ GC_EXTERN GC_bool GC_print_back_height;
                 /* GC_enable_incremental once more).                    */
 #endif /* !GC_DISABLE_INCREMENTAL */
 
+#ifdef MANUAL_VDB
+  GC_INNER void GC_dirty_inner(const void *p); /* does not require locking */
+# define GC_dirty(p) (GC_incremental ? GC_dirty_inner(p) : (void)0)
+# define REACHABLE_AFTER_DIRTY(p) GC_reachable_here(p)
+#else
+# define GC_dirty(p) (void)(p)
+# define REACHABLE_AFTER_DIRTY(p) (void)(p)
+#endif
+
 /* Same as GC_base but excepts and returns a pointer to const object.   */
 #define GC_base_C(p) ((const void *)GC_base((/* no const */ void *)(p)))
 
@@ -2277,7 +2301,18 @@ GC_EXTERN signed_word GC_bytes_found;
 
 #   endif
 # endif
-# ifdef MPROTECT_VDB
+# if (!defined(MANUAL_VDB) && !defined(MPROTECT_VDB)) \
+     || defined(HAVE_LOCKFREE_AO_OR)
+#   define GC_acquire_dirty_lock() (void)0
+#   define GC_release_dirty_lock() (void)0
+# else
+    /* Acquire the spin lock we use to update dirty bits.       */
+    /* Threads should not get stopped holding it.  But we may   */
+    /* acquire and release it during GC_remove_protection call. */
+#   define GC_acquire_dirty_lock() \
+        do { /* empty */ \
+        } while (AO_test_and_set_acquire(&GC_fault_handler_lock) == AO_TS_SET)
+#   define GC_release_dirty_lock() AO_CLEAR(&GC_fault_handler_lock)
     GC_EXTERN volatile AO_TS_t GC_fault_handler_lock;
                                         /* defined in os_dep.c */
 # endif

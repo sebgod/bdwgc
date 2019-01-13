@@ -15,7 +15,7 @@
  * A really simple-minded text editor based on cords.
  * Things it does right:
  *      No size bounds.
- *      Inbounded undo.
+ *      Unbounded undo.
  *      Shouldn't crash no matter what file you invoke it on (e.g. /vmunix)
  *              (Make sure /vmunix is not writable before you try this.)
  *      Scrolls horizontally.
@@ -37,7 +37,8 @@
 #endif
 #include <ctype.h>
 
-#if (defined(__BORLANDC__) || defined(__CYGWIN__)) && !defined(WIN32)
+#if (defined(__BORLANDC__) || defined(__CYGWIN__) || defined(__MINGW32__) \
+     || defined(__NT__) || defined(_WIN32)) && !defined(WIN32)
     /* If this is DOS or win16, we'll fail anyway.      */
     /* Might as well assume win32.                      */
 #   define WIN32
@@ -133,22 +134,30 @@ void prune_map(void)
     do {
         current_map_size++;
         if (map -> line < start_line - LINES && map -> previous != 0) {
-            map -> previous = map -> previous -> previous;
+            line_map pred = map -> previous -> previous;
+
+            map -> previous = pred;
+            GC_END_STUBBORN_CHANGE(map);
+            GC_reachable_here(pred);
         }
         map = map -> previous;
     } while (map != 0);
 }
 
 /* Add mapping entry */
-void add_map(int line, size_t pos)
+void add_map(int line_arg, size_t pos)
 {
     line_map new_map = GC_NEW(struct LineMapRep);
+    line_map cur_map;
 
     if (NULL == new_map) OUT_OF_MEMORY;
     if (current_map_size >= MAX_MAP_SIZE) prune_map();
-    new_map -> line = line;
+    new_map -> line = line_arg;
     new_map -> pos = pos;
-    new_map -> previous = current_map;
+    cur_map = current_map;
+    new_map -> previous = cur_map;
+    GC_END_STUBBORN_CHANGE(new_map);
+    GC_reachable_here(cur_map);
     current_map = new_map;
     current_map_size++;
 }
@@ -194,7 +203,11 @@ void add_hist(CORD s)
     new_file -> file_contents = current = s;
     current_len = CORD_len(s);
     new_file -> previous = now;
-    if (now != 0) now -> map = current_map;
+    GC_END_STUBBORN_CHANGE(new_file);
+    if (now != NULL) {
+        now -> map = current_map;
+        GC_END_STUBBORN_CHANGE(now);
+    }
     now = new_file;
 }
 
@@ -245,6 +258,8 @@ void replace_line(int i, CORD s)
             }
         }
         screen[i] = s;
+        GC_END_STUBBORN_CHANGE(screen + i);
+        GC_reachable_here(s);
     }
 }
 #else
@@ -566,6 +581,7 @@ void generic_init(void)
     add_hist(initial);
     now -> map = current_map;
     now -> previous = now;  /* Can't back up further: beginning of the world */
+    GC_END_STUBBORN_CHANGE(now);
     need_redisplay = ALL;
     fix_cursor();
 }

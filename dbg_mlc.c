@@ -281,7 +281,7 @@ GC_INNER void *GC_store_debug_info_inner(void *p, word sz GC_ATTR_UNUSED,
       ((oh *)p) -> oh_bg_ptr = HIDE_BACK_PTR((ptr_t)0);
 #   endif
     ((oh *)p) -> oh_string = string;
-    ((oh *)p) -> oh_int = (word)linenum;
+    ((oh *)p) -> oh_int = linenum;
 #   ifndef SHORT_DBG_HDRS
       ((oh *)p) -> oh_sz = sz;
       ((oh *)p) -> oh_sf = START_FLAG ^ (word)result;
@@ -632,22 +632,6 @@ STATIC void * GC_debug_generic_malloc(size_t lb, int knd, GC_EXTRA_PARAMS)
     GC_change_stubborn(q);
   }
 
-  GC_API void GC_CALL GC_debug_end_stubborn_change(const void *p)
-  {
-    const void * q = GC_base_C(p);
-    hdr * hhdr;
-
-    if (q == 0) {
-        ABORT_ARG1("GC_debug_end_stubborn_change: bad arg", ": %p", p);
-    }
-    hhdr = HDR(q);
-    if (hhdr -> hb_obj_kind != STUBBORN) {
-        ABORT_ARG1("GC_debug_end_stubborn_change: arg not stubborn",
-                   ": %p", p);
-    }
-    GC_end_stubborn_change(q);
-  }
-
 #else /* !STUBBORN_ALLOC */
 
   GC_API GC_ATTR_MALLOC void * GC_CALL GC_debug_malloc_stubborn(size_t lb,
@@ -658,10 +642,22 @@ STATIC void * GC_debug_generic_malloc(size_t lb, int knd, GC_EXTRA_PARAMS)
 
   GC_API void GC_CALL GC_debug_change_stubborn(
                                 const void * p GC_ATTR_UNUSED) {}
-
-  GC_API void GC_CALL GC_debug_end_stubborn_change(
-                                const void * p GC_ATTR_UNUSED) {}
 #endif /* !STUBBORN_ALLOC */
+
+GC_API void GC_CALL GC_debug_end_stubborn_change(const void *p)
+{
+    const void * q = GC_base_C(p);
+
+    if (NULL == q) {
+        ABORT_ARG1("GC_debug_end_stubborn_change: bad arg", ": %p", p);
+    }
+# ifdef STUBBORN_ALLOC
+    if (HDR(q) -> hb_obj_kind != STUBBORN)
+        ABORT_ARG1("GC_debug_end_stubborn_change: arg not stubborn",
+                   ": %p", p);
+# endif
+    GC_end_stubborn_change(q);
+}
 
 GC_API GC_ATTR_MALLOC void * GC_CALL GC_debug_malloc_atomic(size_t lb,
                                                             GC_EXTRA_PARAMS)

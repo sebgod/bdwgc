@@ -48,6 +48,7 @@ mercury_boehm_gc_conf.h
 /de
 /disclaim_bench
 /disclaim_test
+/disclaim_weakmap_test
 /dont_ar_1
 /dont_ar_3
 /dont_ar_4
@@ -164,9 +165,12 @@ stamp-h1
 *.ilk
 *.pdb
 *.sbr
+*.tds
+gc.def
 
 # Stuff from VS build system and IDE
 *.vcproj.*.user
+.vs/
 
 # Code analysis tools:
 *.c.gcov

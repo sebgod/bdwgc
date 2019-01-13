@@ -114,7 +114,8 @@
 # endif
 # if defined(__aarch64__)
 #    define AARCH64
-#    if !defined(LINUX) && !defined(DARWIN) && !defined(FREEBSD)
+#    if !defined(LINUX) && !defined(DARWIN) && !defined(FREEBSD) \
+        && !defined(NETBSD)
 #      define NOSYS
 #      define mach_type_known
 #    endif
@@ -163,6 +164,10 @@
 # endif
 # if defined(NETBSD) && (defined(__arm32__) || defined(__arm__))
 #    define ARM32
+#    define mach_type_known
+# endif
+# if defined(NETBSD) && defined(__aarch64__)
+#    define AARCH64
 #    define mach_type_known
 # endif
 # if defined(NETBSD) && defined(__sh__)
@@ -501,7 +506,9 @@
 #     else
 #       define I386
 #     endif
-#     define MSWIN32    /* or Win64 */
+#     ifndef MSWIN32
+#       define MSWIN32 /* or Win64 */
+#     endif
 #     define mach_type_known
 #   endif
 #   if defined(_MSC_VER) && defined(_M_IA64)
@@ -598,6 +605,10 @@
 #   endif
 #   define mach_type_known
 # endif
+# if defined(__riscv) && defined(LINUX)
+#   define RISCV
+#   define mach_type_known
+# endif
 
 # if defined(SYMBIAN)
 #   define mach_type_known
@@ -644,6 +655,7 @@
                     /*             S390       ==> 390-like machine      */
                     /*                  running LINUX                   */
                     /*             AARCH64    ==> ARM AArch64           */
+                    /*                  (LP64 and ILP32 variants)       */
                     /*             ARM32      ==> Intel StrongARM       */
                     /*             IA64       ==> Intel IPF             */
                     /*                            (e.g. Itanium)        */
@@ -682,7 +694,7 @@
  *
  * DATASTART is the beginning of the data segment.
  * On some platforms SEARCH_FOR_DATA_START is defined.
- * SEARCH_FOR_DATASTART will cause GC_data_start to
+ * The latter will cause GC_data_start to
  * be set to an address determined by accessing data backwards from _end
  * until an unmapped page is found.  DATASTART will be defined to be
  * GC_data_start.
@@ -2197,6 +2209,14 @@
 #     define DATASTART GC_FreeBSDGetDataStart(0x1000, (ptr_t)etext)
 #     define DATASTART_USES_BSDGETDATASTART
 #   endif
+#   ifdef NETBSD
+#     define OS_TYPE "NETBSD"
+#     define HEURISTIC2
+      extern ptr_t GC_data_start;
+#     define DATASTART GC_data_start
+#     define ELF_CLASS ELFCLASS64
+#     define DYNAMIC_LOADING
+#   endif
 #   ifdef NOSYS
       /* __data_start is usually defined in the target linker script.   */
       extern int __data_start[];
@@ -2468,13 +2488,18 @@
 #            define DATASTART ((ptr_t)((((word)(etext)) + 0xfff) & ~0xfff))
 #       endif
 #       if defined(__GLIBC__) && !defined(__UCLIBC__)
+          /* A workaround for GCF (Google Cloud Function) which does    */
+          /* not support mmap() for "/dev/zero".  Should not cause any  */
+          /* harm to other targets.                                     */
+#         ifndef USE_MMAP
+#           define USE_MMAP
+#         endif
+#         define USE_MMAP_ANON
           /* At present, there's a bug in GLibc getcontext() on         */
           /* Linux/x64 (it clears FPU exception mask).  We define this  */
           /* macro to workaround it.                                    */
           /* FIXME: This seems to be fixed in GLibc v2.14.              */
 #         define GETCONTEXT_FPU_EXCMASK_BUG
-#       endif
-#       if defined(__GLIBC__) && !defined(__UCLIBC__)
           /* Workaround lock elision implementation for some glibc.     */
 #         define GLIBC_2_19_TSX_BUG
 #         include <gnu/libc-version.h> /* for gnu_get_libc_version() */
@@ -2666,6 +2691,19 @@
 #     define DYNAMIC_LOADING
 #   endif
 # endif
+
+# ifdef RISCV
+#   define MACH_TYPE "RISC-V"
+#   define CPP_WORDSZ __riscv_xlen /* 32 or 64 */
+#   define ALIGNMENT (CPP_WORDSZ/8)
+#   ifdef LINUX
+#     define OS_TYPE "LINUX"
+      extern int __data_start[];
+#     define DATASTART ((ptr_t)__data_start)
+#     define LINUX_STACKBOTTOM
+#     define DYNAMIC_LOADING
+#   endif
+# endif /* RISCV */
 
 #if defined(__GLIBC__) && !defined(DONT_USE_LIBC_PRIVATES)
   /* Use glibc's stack-end marker. */

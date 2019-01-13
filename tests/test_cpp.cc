@@ -84,6 +84,7 @@ class A {public:
     GC_ATTR_EXPLICIT A( int iArg ): i( iArg ) {}
     void Test( int iArg ) {
         my_assert( i == iArg );}
+    virtual ~A() {}
     int i;};
 
 
@@ -99,16 +100,49 @@ class B: public GC_NS_QUALIFY(gc), public A { public:
 
 int B::deleting = 0;
 
+#define C_INIT_LEFT_RIGHT(arg_l, arg_r) \
+    { \
+        C *l = new C(arg_l); \
+        C *r = new C(arg_r); \
+        left = l; \
+        right = r; \
+        if (GC_is_heap_ptr(this)) { \
+            GC_END_STUBBORN_CHANGE(this); \
+            GC_reachable_here(l); \
+            GC_reachable_here(r); \
+        } \
+    }
 
 class C: public GC_NS_QUALIFY(gc_cleanup), public A { public:
     /* A collectible class with cleanup and virtual multiple inheritance. */
 
+    // The class uses dynamic memory/resource allocation, so provide both
+    // a copy constructor and an assignment operator to workaround a cppcheck
+    // warning.
+    C(const C& c) : A(c.i), level(c.level), left(0), right(0) {
+        if (level > 0)
+            C_INIT_LEFT_RIGHT(*c.left, *c.right);
+    }
+
+    C& operator=(const C& c) {
+        if (this != &c) {
+            delete left;
+            delete right;
+            i = c.i;
+            level = c.level;
+            left = 0;
+            right = 0;
+            if (level > 0)
+                C_INIT_LEFT_RIGHT(*c.left, *c.right);
+        }
+        return *this;
+    }
+
     GC_ATTR_EXPLICIT C( int levelArg ): A( levelArg ), level( levelArg ) {
         nAllocated++;
         if (level > 0) {
-            left = new C( level - 1 );
-            right = new C( level - 1 );}
-        else {
+            C_INIT_LEFT_RIGHT(level - 1, level - 1);
+        } else {
             left = right = 0;}}
     ~C() {
         this->A::Test( level );
@@ -119,7 +153,9 @@ class C: public GC_NS_QUALIFY(gc_cleanup), public A { public:
         left = right = 0;
         level = -123456;}
     static void Test() {
-        my_assert( nFreed <= nAllocated && nFreed >= .8 * nAllocated );}
+        my_assert(nFreed <= nAllocated);
+        my_assert(nFreed >= (nAllocated / 5) * 4 || GC_get_find_leak());
+    }
 
     static int nFreed;
     static int nAllocated;
@@ -142,7 +178,8 @@ class D: public GC_NS_QUALIFY(gc) { public:
         nFreed++;
         my_assert( (GC_word)self->i == (GC_word)data );}
     static void Test() {
-        my_assert( nFreed >= .8 * nAllocated );}
+        my_assert(nFreed >= (nAllocated / 5) * 4 || GC_get_find_leak());
+    }
 
     int i;
     static int nFreed;
@@ -180,7 +217,7 @@ class F: public E {public:
     }
 
     static void Test() {
-        my_assert(nFreedF >= .8 * nAllocatedF);
+        my_assert(nFreedF >= (nAllocatedF / 5) * 4 || GC_get_find_leak());
         my_assert(2 * nFreedF == nFreed);
     }
 
@@ -271,6 +308,8 @@ void* Undisguise( GC_word i ) {
         exit(3);
       }
       *xptr = x;
+      GC_END_STUBBORN_CHANGE(xptr);
+      GC_reachable_here(x);
       x = 0;
 #   endif
     if (argc != 2

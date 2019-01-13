@@ -558,7 +558,7 @@ GC_API void GC_CALL GC_get_heap_usage_safe(GC_word *pheap_size,
     pstats->non_gc_bytes = GC_non_gc_bytes;
     pstats->gc_no = GC_gc_no; /* could be -1 */
 #   ifdef PARALLEL_MARK
-      pstats->markers_m1 = (word)GC_markers_m1;
+      pstats->markers_m1 = (word)((signed_word)GC_markers_m1);
 #   else
       pstats->markers_m1 = 0; /* one marker */
 #   endif
@@ -760,7 +760,13 @@ GC_API int GC_CALL GC_is_init_called(void)
   STATIC void GC_exit_check(void)
   {
     if (GC_find_leak) {
-      GC_gcollect();
+#     ifdef THREADS
+        GC_in_thread_creation = TRUE; /* OK to collect from unknown thread. */
+        GC_gcollect();
+        GC_in_thread_creation = FALSE;
+#     else
+        GC_gcollect();
+#     endif
     }
   }
 #endif
@@ -828,6 +834,11 @@ GC_API int GC_CALL GC_is_init_called(void)
   }
 #endif /* MSWIN32 */
 
+#if defined(THREADS) && defined(UNIX_LIKE) && !defined(NO_GETCONTEXT)
+  static void callee_saves_pushed_dummy_fn(ptr_t data GC_ATTR_UNUSED,
+                                           void * context GC_ATTR_UNUSED) {}
+#endif
+
 STATIC word GC_parse_mem_size_arg(const char *str)
 {
   word result = 0; /* bad value */
@@ -870,6 +881,9 @@ GC_API void GC_CALL GC_init(void)
     /* LOCK(); -- no longer does anything this early. */
     word initial_heap_sz;
     IF_CANCEL(int cancel_state;)
+#   if defined(GC_ASSERTIONS) && defined(GC_ALWAYS_MULTITHREADED)
+      DCL_LOCK_STATE;
+#   endif
 
     if (EXPECT(GC_is_initialized, TRUE)) return;
 #   ifdef REDIRECT_MALLOC
@@ -985,7 +999,7 @@ GC_API void GC_CALL GC_init(void)
             if (0 != file_name)
 #         endif
           {
-            int log_d = open(file_name, O_CREAT|O_WRONLY|O_APPEND, 0666);
+            int log_d = open(file_name, O_CREAT | O_WRONLY | O_APPEND, 0644);
             if (log_d < 0) {
               GC_err_printf("Failed to open %s as log file\n", file_name);
             } else {
@@ -1109,7 +1123,7 @@ GC_API void GC_CALL GC_init(void)
         if (space_divisor_string != NULL) {
           int space_divisor = atoi(space_divisor_string);
           if (space_divisor > 0)
-            GC_free_space_divisor = (word)space_divisor;
+            GC_free_space_divisor = (unsigned)space_divisor;
         }
     }
 #   ifdef USE_MUNMAP
@@ -1242,6 +1256,9 @@ GC_API void GC_CALL GC_init(void)
           GC_set_max_heap_size(max_heap_sz);
         }
     }
+#   if defined(GC_ASSERTIONS) && defined(GC_ALWAYS_MULTITHREADED)
+        LOCK(); /* just to set GC_lock_holder */
+#   endif
     if (!GC_expand_hp_inner(divHBLKSZ(initial_heap_sz))) {
         GC_err_printf("Can't start up: not enough memory\n");
         EXIT();
@@ -1270,30 +1287,31 @@ GC_API void GC_CALL GC_init(void)
 #   endif
     GC_is_initialized = TRUE;
 #   if defined(GC_PTHREADS) || defined(GC_WIN32_THREADS)
-#       if defined(GC_ASSERTIONS) && defined(GC_ALWAYS_MULTITHREADED)
-          DCL_LOCK_STATE;
-          LOCK(); /* just to set GC_lock_holder */
-          GC_thr_init();
-          UNLOCK();
-#       else
-          GC_thr_init();
-#       endif
+        GC_thr_init();
 #       ifdef PARALLEL_MARK
           /* Actually start helper threads.     */
+#         if defined(GC_ASSERTIONS) && defined(GC_ALWAYS_MULTITHREADED)
+            UNLOCK();
+#         endif
           GC_start_mark_threads_inner();
+#         if defined(GC_ASSERTIONS) && defined(GC_ALWAYS_MULTITHREADED)
+            LOCK();
+#         endif
 #       endif
 #   endif
     COND_DUMP;
     /* Get black list set up and/or incremental GC started */
-      if (!GC_dont_precollect || GC_incremental) {
-#       if defined(GC_ASSERTIONS) && defined(GC_ALWAYS_MULTITHREADED)
-          LOCK();
-          GC_gcollect_inner();
-          UNLOCK();
-#       else
-          GC_gcollect_inner();
-#       endif
-      }
+    if (!GC_dont_precollect || GC_incremental) {
+        GC_gcollect_inner();
+    }
+#   if defined(GC_ASSERTIONS) && defined(GC_ALWAYS_MULTITHREADED)
+        UNLOCK();
+#   endif
+#   if defined(THREADS) && defined(UNIX_LIKE) && !defined(NO_GETCONTEXT)
+      /* Ensure getcontext_works is set to avoid potential data race.   */
+      if (GC_dont_gc || GC_dont_precollect)
+        GC_with_callee_saves_pushed(callee_saves_pushed_dummy_fn, NULL);
+#   endif
 #   ifdef STUBBORN_ALLOC
         GC_stubborn_init();
 #   endif
@@ -1581,7 +1599,7 @@ GC_API void GC_CALL GC_enable_incremental(void)
       IF_CANCEL(int cancel_state;)
 
       DISABLE_CANCEL(cancel_state);
-      while ((size_t)bytes_written < len) {
+      while ((unsigned)bytes_written < len) {
 #        ifdef GC_SOLARIS_THREADS
              int result = syscall(SYS_write, fd, buf + bytes_written,
                                              len - bytes_written);
@@ -2358,6 +2376,12 @@ GC_API void GC_CALL GC_set_force_unmap_on_gcollect(int value)
 GC_API int GC_CALL GC_get_force_unmap_on_gcollect(void)
 {
     return (int)GC_force_unmap_on_gcollect;
+}
+
+GC_API void GC_CALL GC_abort_on_oom(void)
+{
+    GC_err_printf("Insufficient memory for the allocation\n");
+    EXIT();
 }
 
 GC_API void GC_CALL GC_mercury_write_size_map(FILE *fp)

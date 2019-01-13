@@ -5,6 +5,7 @@
  * Copyright 1999 by Hewlett-Packard Company.  All rights reserved.
  * Copyright (C) 2007 Free Software Foundation, Inc
  * Copyright (c) 2000-2011 by Hewlett-Packard Development Company.
+ * Copyright (c) 2009-2018 Ivan Maidanski
  *
  * THIS MATERIAL IS PROVIDED AS IS, WITH ABSOLUTELY NO WARRANTY EXPRESSED
  * OR IMPLIED.  ANY USE IS AT YOUR OWN RISK.
@@ -1333,11 +1334,15 @@ typedef void (GC_CALLBACK * GC_abort_func)(const char * /* msg */);
 GC_API void GC_CALL GC_set_abort_func(GC_abort_func) GC_ATTR_NONNULL(1);
 GC_API GC_abort_func GC_CALL GC_get_abort_func(void);
 
+/* A portable way to abort the application because of not enough memory.*/
+GC_API void GC_CALL GC_abort_on_oom(void);
+
 /* The following is intended to be used by a higher level       */
 /* (e.g. Java-like) finalization facility.  It is expected      */
 /* that finalization code will arrange for hidden pointers to   */
 /* disappear.  Otherwise objects can be accessed after they     */
 /* have been collected.                                         */
+/* Should not be used in the leak-finding mode.                 */
 /* Note that putting pointers in atomic objects or in           */
 /* non-pointer slots of "typed" objects is equivalent to        */
 /* disguising them in this way, and may have other advantages.  */
@@ -1588,10 +1593,10 @@ GC_API void GC_CALL GC_dump_finalization(void);
         ((type_of_result)GC_pre_incr((void **)(&(x)), (n)*sizeof(*x)))
 # define GC_POST_INCR3(x, n, type_of_result) \
         ((type_of_result)GC_post_incr((void **)(&(x)), (n)*sizeof(*x)))
-# define GC_PTR_ADD(x, n) GC_PTR_ADD3(x, n, typeof(x))
-# define GC_PRE_INCR(x, n) GC_PRE_INCR3(x, n, typeof(x))
-# define GC_POST_INCR(x) GC_POST_INCR3(x, 1, typeof(x))
-# define GC_POST_DECR(x) GC_POST_INCR3(x, -1, typeof(x))
+# define GC_PTR_ADD(x, n) GC_PTR_ADD3(x, n, __typeof__(x))
+# define GC_PRE_INCR(x, n) GC_PRE_INCR3(x, n, __typeof__(x))
+# define GC_POST_INCR(x) GC_POST_INCR3(x, 1, __typeof__(x))
+# define GC_POST_DECR(x) GC_POST_INCR3(x, -1, __typeof__(x))
 #else /* !GC_DEBUG || !__GNUC__ */
   /* We can't do this right without typeof, which ANSI decided was not    */
   /* sufficiently useful.  Without it we resort to the non-debug version. */
@@ -1825,7 +1830,7 @@ GC_API void GC_CALL GC_mercury_write_size_map(FILE *fp);
     extern int _data_start__[], _data_end__[], _bss_start__[], _bss_end__[];
 #   define GC_DATASTART ((GC_word)_data_start__ < (GC_word)_bss_start__ \
                          ? (void *)_data_start__ : (void *)_bss_start__)
-#  define GC_DATAEND ((GC_word)_data_end__ > (GC_word)_bss_end__ \
+#   define GC_DATAEND ((GC_word)_data_end__ > (GC_word)_bss_end__ \
                       ? (void *)_data_end__ : (void *)_bss_end__)
 # endif /* !__x86_64__ */
 # define GC_INIT_CONF_ROOTS GC_add_roots(GC_DATASTART, GC_DATAEND); \
